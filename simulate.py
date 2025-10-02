@@ -13,7 +13,7 @@ from pathlib import Path
 from Config import Config
 from ctb.api.binance_client import BinanceClient
 from ctb.technical_analysis.divergence import DivergenceSignal, find_divergences
-from ctb.technical_analysis.indicators import rsi
+from ctb.technical_analysis.indicators import rsi, ema, atr
 
 
 LOG_FILE_ENV_VAR = "SIM_LOG_FILE"
@@ -317,6 +317,196 @@ class RSIDivergenceSimulator:
 		)
 
 
+class MultiFactorSimulator:
+	"""Adaptive multi-factor long-only simulator.
+
+	Entry Conditions (evaluated candle-by-candle):
+	- Fast EMA > Slow EMA (uptrend confirmation)
+	- Either: latest bullish RSI divergence (not previously used) OR RSI reversal (RSI crosses up out of oversold zone <30 to >35)
+	- ATR/close >= min_atr_pct (sufficient volatility)
+
+	Position Sizing:
+	- Risk per trade = equity * config.risk_per_trade_pct
+	- Stop distance = entry - stop (ATR based). Quantity = risk_capital / distance.
+
+	Management:
+	- Take profit at entry + reward_risk * (entry - stop)
+	- Exit on SL hit, TP hit, or max_hold_candles
+	- No pending orders: fill immediately at close of signal candle (simplifies vs limit logic).
+	"""
+
+	def __init__(self, symbol_data: Dict[str, SymbolData], timeline: List[datetime], config: Config) -> None:
+		self.symbol_data = symbol_data
+		self.timeline = timeline
+		self.config = config
+		self.cash = config.initial_capital
+		self.positions: Dict[str, Position] = {}
+		self.realized_pnl = 0.0
+		# Track used divergences to avoid duplicate triggers
+		self.used_divergences: Dict[str, set[int]] = {s: set() for s in symbol_data.keys()}
+
+	def _log(self, message: str) -> None:
+		logger.info(message)
+
+	def portfolio_value(self) -> float:
+		value = self.cash
+		for p in self.positions.values():
+			value += p.last_price * p.quantity
+		return value
+
+	def _compute_indicators(self, closes: List[float], highs: List[float], lows: List[float]) -> tuple[List[float], List[float], List[float], List[float]]:
+		rsi_values = rsi(closes, period=self.config.rsi_period)
+		fast = ema(closes, self.config.fast_ema_period)
+		slow = ema(closes, self.config.slow_ema_period)
+		atr_vals = atr(highs, lows, closes, period=self.config.atr_period)
+		return rsi_values, fast, slow, atr_vals
+
+	def _latest_bullish_divergence(self, symbol: str, timeframe: str, closes: List[float], rsi_values: List[float]) -> DivergenceSignal | None:
+		sig = find_divergences(symbol, timeframe, closes, rsi_values, k=self.config.swing_k)
+		if not sig:
+			return None
+		# Use the most recent that hasn't been used
+		for div in reversed(sig):
+			if div.kind == 'bullish' and div.candle_index not in self.used_divergences[symbol]:
+				return div
+		return None
+
+	def _signal_at_index(self, symbol: str, data: SymbolData, idx: int) -> tuple[float, float, float] | None:
+		# Build slices up to current index inclusive
+		klines_slice = data.klines[: idx + 1]
+		closes = [k.close for k in klines_slice]
+		highs = [k.high for k in klines_slice]
+		lows = [k.low for k in klines_slice]
+		if len(closes) < max(self.config.slow_ema_period, self.config.rsi_period, self.config.atr_period) + 5:
+			return None
+		rsi_values, fast, slow, atr_vals = self._compute_indicators(closes, highs, lows)
+		rsi_now = rsi_values[-1]
+		fast_now = fast[-1]
+		slow_now = slow[-1]
+		atr_now = atr_vals[-1]
+		if any(math.isnan(v) for v in (rsi_now, fast_now, slow_now, atr_now)):
+			return None
+		# Trend and volatility filters
+		if fast_now <= slow_now:
+			return None
+		if atr_now / closes[-1] < self.config.min_atr_pct:
+			return None
+		# Divergence check
+		divergence = self._latest_bullish_divergence(symbol, self.config.timeframe, closes, rsi_values)
+		ref_low: float | None = None
+		if divergence and divergence.candle_index < idx:
+			ref_low = divergence.price_last
+		else:
+			# RSI reversal logic: find prior RSI < 30 and current > 35
+			if rsi_now > 35:
+				for prev in range(len(rsi_values) - 2, -1, -1):
+					val = rsi_values[prev]
+					if not math.isnan(val) and val < 30:
+						ref_low = min(lows[prev:])
+						break
+		if ref_low is None:
+			return None
+		# Adaptive stop and target
+		stop = ref_low - atr_now * self.config.atr_stop_mult * 0.5
+		entry = closes[-1]  # market entry at close
+		if stop >= entry:
+			return None
+		risk_per_unit = entry - stop
+		reward_risk = self.config.reward_risk
+		target = entry + risk_per_unit * reward_risk
+		return entry, stop, target
+
+	def _try_enter(self, symbol: str, data: SymbolData, idx: int, current_time: datetime) -> None:
+		if symbol in self.positions:
+			return
+		sig = self._signal_at_index(symbol, data, idx)
+		if not sig:
+			return
+		entry, stop, target = sig
+		equity = self.portfolio_value()
+		risk_capital = equity * self.config.risk_per_trade_pct
+		risk_per_unit = entry - stop
+		if risk_per_unit <= 0:
+			return
+		quantity = risk_capital / risk_per_unit
+		cost = quantity * entry
+		# Cap by available cash
+		if cost > self.cash:
+			quantity = self.cash / entry
+			cost = quantity * entry
+		if cost < self.config.min_trade_allocation:
+			return
+		self.cash -= cost
+		self.positions[symbol] = Position(
+			symbol=symbol,
+			entry_price=entry,
+			quantity=quantity,
+			entry_index=idx,
+			stop_loss=stop,
+			take_profit=target,
+			divergence_index=idx,
+			last_price=entry,
+		)
+		self._log(f"{_format_time(current_time)} MF enter {symbol} qty {quantity:.6f} @ {entry:.4f} stop {stop:.4f} tp {target:.4f}")
+
+	def _process_positions(self, symbol: str, idx: int, kline: Kline, current_time: datetime) -> None:
+		position = self.positions.get(symbol)
+		if not position:
+			return
+		position.last_price = kline.close
+		exit_price: float | None = None
+		exit_reason: str | None = None
+		if kline.low <= position.stop_loss:
+			exit_price = position.stop_loss
+			exit_reason = 'stop-loss'
+		elif kline.high >= position.take_profit:
+			exit_price = position.take_profit
+			exit_reason = 'take-profit'
+		else:
+			held = idx - position.entry_index
+			if held >= self.config.max_hold_candles:
+				exit_price = kline.close
+				exit_reason = 'max-hold'
+		if exit_price is not None:
+			proceeds = exit_price * position.quantity
+			pnl = proceeds - position.entry_price * position.quantity
+			self.cash += proceeds
+			self.realized_pnl += pnl
+			self._log(f"{_format_time(current_time)} MF exit {symbol} @ {exit_price:.4f} ({exit_reason}) pnl {pnl:.2f}")
+			del self.positions[symbol]
+
+	def run(self) -> SimulationResult:
+		if not self.timeline:
+			raise ValueError("Timeline is empty")
+		for current_time in self.timeline:
+			open_time_ms = _datetime_to_ms(current_time)
+			symbols_with_candle = {
+				symbol: data.time_to_index.get(open_time_ms)
+				for symbol, data in self.symbol_data.items()
+			}
+			symbols_with_candle = {s: idx for s, idx in symbols_with_candle.items() if idx is not None}
+			if not symbols_with_candle:
+				continue
+			# Entries
+			for symbol, idx in symbols_with_candle.items():
+				self._try_enter(symbol, self.symbol_data[symbol], idx, current_time)
+			# Position management
+			for symbol, idx in symbols_with_candle.items():
+				kline = self.symbol_data[symbol].klines[idx]
+				self._process_positions(symbol, idx, kline, current_time)
+		final_equity = self.portfolio_value()
+		self._log(
+			f"MF Simulation finished: final equity {final_equity:.2f} USD, realized pnl {self.realized_pnl:.2f} USD"
+		)
+		return SimulationResult(
+			final_equity=final_equity,
+			cash=self.cash,
+			realized_pnl=self.realized_pnl,
+			open_positions=len(self.positions),
+			pending_orders=0,
+		)
+
+
 def fetch_symbol_universe(client: BinanceClient, limit: Optional[int]) -> List[str]:
 	symbols = client.fetch_symbols_usdc(limit=limit)
 	return sorted(symbols)
@@ -358,10 +548,10 @@ def prepare_symbol_data(klines_by_symbol: Dict[str, List[List[float]]], start_ms
 
 
 def run_simulation(config: Config, days: Optional[int] = None,
-			   symbols_limit: Optional[int] = None,
-			   api_key: Optional[str] = None,
-			   api_secret: Optional[str] = None,
-			   sandbox: Optional[bool] = None) -> SimulationResult:
+		   symbols_limit: Optional[int] = None,
+		   api_key: Optional[str] = None,
+		   api_secret: Optional[str] = None,
+		   sandbox: Optional[bool] = None) -> SimulationResult:
 	days = config.default_days if days is None else days
 	symbols_limit = config.default_symbols_limit if symbols_limit is None else symbols_limit
 	api_key = config.binance_api_key if api_key is None else api_key
@@ -383,8 +573,14 @@ def run_simulation(config: Config, days: Optional[int] = None,
 	symbol_data = prepare_symbol_data(klines_by_symbol, start_ms, config)
 	if not symbol_data:
 		raise RuntimeError("No symbol data available after preparation")
-	simulator = RSIDivergenceSimulator(symbol_data, timeline, config)
-	return simulator.run()
+	if config.strategy_mode == 'multi_factor':
+		logger.info("Running multi-factor strategy mode")
+		simulator = MultiFactorSimulator(symbol_data, timeline, config)
+		return simulator.run()
+	else:
+		logger.info("Running divergence strategy mode")
+		simulator = RSIDivergenceSimulator(symbol_data, timeline, config)
+		return simulator.run()
 
 
 def parse_args() -> argparse.Namespace:
