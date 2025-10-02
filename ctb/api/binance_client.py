@@ -115,6 +115,44 @@ class BinanceClient:
         }
         return self._request('POST', '/api/v3/order', params=params, signed=True)
 
+    def place_order_limit(self, symbol: str, side: str, quantity: float, price: float, tif: str = 'GTC') -> Any:
+        """Place a simple limit order.
+
+        NOTE: This does not handle filters (lot size, price tick) robustly; for production,
+        query exchangeInfo and conform values. Here we rely on Binance rounding rules being
+        lenient for standard symbols with 6 decimal formatting.
+        """
+        params = {
+            'symbol': symbol,
+            'side': side.upper(),
+            'type': 'LIMIT',
+            'timeInForce': tif,
+            'quantity': self._format_quantity(quantity),
+            'price': self._format_price(price),
+        }
+        return self._request('POST', '/api/v3/order', params=params, signed=True)
+
+    def get_order(self, symbol: str, order_id: int) -> Any:
+        params = {'symbol': symbol, 'orderId': order_id}
+        return self._get('/api/v3/order', params=params, signed=True)
+
+    def cancel_order(self, symbol: str, order_id: int) -> Any:
+        params = {'symbol': symbol, 'orderId': order_id}
+        return self._request('DELETE', '/api/v3/order', params=params, signed=True)
+
+    def get_account(self) -> Any:
+        return self._get('/api/v3/account', signed=True)
+
+    def get_balance(self, asset: str) -> float:
+        acct = self.get_account()
+        for bal in acct.get('balances', []):
+            if bal.get('asset') == asset:
+                return float(bal.get('free', '0'))
+        return 0.0
+
     def _format_quantity(self, qty: float) -> str:
         # Simplistic formatting; in production we would query exchangeInfo for lot size filters
         return f"{qty:.6f}".rstrip('0').rstrip('.')
+
+    def _format_price(self, price: float) -> str:
+        return f"{price:.8f}".rstrip('0').rstrip('.')
