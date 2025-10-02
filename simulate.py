@@ -1,15 +1,44 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
+
+from pathlib import Path
 
 from Config import Config
 from ctb.api.binance_client import BinanceClient
 from ctb.technical_analysis.divergence import DivergenceSignal, find_divergences
 from ctb.technical_analysis.indicators import rsi
+
+
+LOG_FILE_ENV_VAR = "SIM_LOG_FILE"
+DEFAULT_LOG_FILE = Path(os.getenv(LOG_FILE_ENV_VAR, "simulation.log")).expanduser()
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+_logging_configured = False
+
+
+def configure_logging(log_file: Path | str = DEFAULT_LOG_FILE) -> None:
+	global _logging_configured
+	if _logging_configured:
+		return
+	log_path = Path(log_file)
+	log_path.parent.mkdir(parents=True, exist_ok=True)
+	file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+	file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+	logger.addHandler(file_handler)
+	_logging_configured = True
+
+
+configure_logging()
 
 
 @dataclass(frozen=True)
@@ -125,7 +154,7 @@ class RSIDivergenceSimulator:
 		self.realized_pnl = 0.0
 
 	def _log(self, message: str) -> None:
-		print(message)
+		logger.info(message)
 
 	def portfolio_value(self) -> float:
 		value = self.cash
@@ -380,13 +409,20 @@ def main() -> None:
 			api_secret=args.api_secret,
 			sandbox=True if args.sandbox else None,
 		)
-		print(
-			f"Final equity: {result.final_equity:.2f} USD | Realized PnL: {result.realized_pnl:.2f} USD | "
-			f"Cash: {result.cash:.2f} USD"
+		logger.info(
+			"Final equity: %.2f USD | Realized PnL: %.2f USD | Cash: %.2f USD",
+			result.final_equity,
+			result.realized_pnl,
+			result.cash,
 		)
 		if result.open_positions or result.pending_orders:
-			print(f"WARNING: {result.open_positions} open positions and {result.pending_orders} pending orders remain at end of simulation")
+			logger.warning(
+				"%d open positions and %d pending orders remain at end of simulation",
+				result.open_positions,
+				result.pending_orders,
+			)
 	except Exception as exc:  # noqa: BLE001
+		logger.exception("Simulation failed")
 		raise SystemExit(f"Simulation failed: {exc}") from exc
 
 
