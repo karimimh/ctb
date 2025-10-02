@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+"""Compatibility wrapper for the Config class.
+
+Some tooling and examples expect `from config import Config` (lowercase module
+name). The canonical implementation currently resides in `Config.py` (capital C)
+so this file simply re-exports it. Keeping the logic single-sourced avoids
+divergence while supporting both import styles if needed.
+"""
+
+from Config import Config  # noqa: F401
+
+__all__ = ["Config"]
+from __future__ import annotations
+
 """Central application configuration loader.
 
 The original Config class was removed; this module reintroduces a light-weight

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from api.binance_client import BinanceClient
-from Config import Config
+from config import Config
 from strategies.breakout_trend import BreakoutSignal, generate_breakout_signals
 """Dedicated simulator for the breakout / trend-following strategy.
 
