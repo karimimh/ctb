@@ -83,6 +83,15 @@ class Config:
     binance_api_key: Optional[str]
     binance_api_secret: Optional[str]
     sandbox: bool
+    # Advanced strategy parameters
+    fast_ema_period: int
+    slow_ema_period: int
+    atr_period: int
+    atr_stop_mult: float
+    reward_risk: float
+    min_atr_pct: float
+    strategy_mode: str  # 'divergence' or 'multi_factor'
+    risk_per_trade_pct: float  # only used in multi-factor mode (fraction of equity at risk)
 
     @classmethod
     def load(cls) -> "Config":
@@ -109,6 +118,14 @@ class Config:
             binance_api_key=_get_optional_str("BINANCE_API_KEY"),
             binance_api_secret=_get_optional_str("BINANCE_API_SECRET"),
             sandbox=_get_bool("SIM_SANDBOX", False),
+            fast_ema_period=_get_int("SIM_FAST_EMA", 21),
+            slow_ema_period=_get_int("SIM_SLOW_EMA", 100),
+            atr_period=_get_int("SIM_ATR_PERIOD", 14),
+            atr_stop_mult=_get_float("SIM_ATR_STOP_MULT", 2.5),
+            reward_risk=_get_float("SIM_RR", 2.0),
+            min_atr_pct=_get_float("SIM_MIN_ATR_PCT", 0.002),
+            strategy_mode=_get_str("SIM_STRATEGY", "divergence").lower(),
+            risk_per_trade_pct=_get_float("SIM_RISK_PER_TRADE_PCT", 0.01),
         )
 
 

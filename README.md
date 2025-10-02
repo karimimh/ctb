@@ -1,6 +1,6 @@
-# RSI Divergence Crypto Trading Simulator
+# Crypto Trading Simulator (RSI Divergence & Multi-Factor Strategy)
 
-This project simulates a long-only RSI divergence strategy over Binance USDC pairs on 4H candles. The simulator follows the business rules outlined in `INSTRUCTIONS.md`:
+This project simulates crypto trading strategies over Binance USDC pairs on multi-hour candles. The original implementation focuses on a long-only RSI divergence strategy. A new optional, more advanced *multi-factor trend + RSI* strategy has been added (see "Advanced Strategy"). The simulator follows the business rules outlined in `INSTRUCTIONS.md` for the baseline divergence method:
 
 - Start with $1,000 of capital.
 - Trade at most four assets simultaneously, allocating up to 25% of equity per position.
@@ -27,11 +27,28 @@ python -m pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and tweak the parameters before running the simulator:
 
-- `SIM_INITIAL_CAPITAL`, `SIM_CAPITAL_PER_TRADE`, `SIM_MAX_OPEN_POSITIONS`, and `SIM_MIN_TRADE_ALLOCATION` control portfolio sizing.
-- `SIM_TIMEFRAME` (currently `4h`), RSI/detection settings (`SIM_RSI_PERIOD`, `SIM_SWING_K`), and divergence window limits (`SIM_OPPORTUNITY_MIN_CANDLES`, `SIM_OPPORTUNITY_MAX_CANDLES`) drive signal selection.
-- `SIM_STOP_LOSS_PCT`, `SIM_TAKE_PROFIT_PCT`, `SIM_MAX_ENTRY_WAIT_CANDLES`, and `SIM_MAX_HOLD_CANDLES` define trade management rules.
-- `SIM_DEFAULT_DAYS` and `SIM_SYMBOLS_LIMIT` provide default backtest scope when CLI flags are omitted.
-- `BINANCE_API_KEY`, `BINANCE_API_SECRET`, and `SIM_SANDBOX` configure exchange connectivity.
+Baseline divergence strategy variables:
+
+- `SIM_INITIAL_CAPITAL`, `SIM_CAPITAL_PER_TRADE`, `SIM_MAX_OPEN_POSITIONS`, `SIM_MIN_TRADE_ALLOCATION`
+- `SIM_TIMEFRAME` (e.g. `4h`), `SIM_RSI_PERIOD`, `SIM_SWING_K`
+- `SIM_OPPORTUNITY_MIN_CANDLES`, `SIM_OPPORTUNITY_MAX_CANDLES`
+- `SIM_STOP_LOSS_PCT`, `SIM_TAKE_PROFIT_PCT`, `SIM_MAX_ENTRY_WAIT_CANDLES`, `SIM_MAX_HOLD_CANDLES`
+- `SIM_DEFAULT_DAYS`, `SIM_SYMBOLS_LIMIT`
+- `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `SIM_SANDBOX`
+
+Advanced multi-factor strategy extra variables (now included in `Config`):
+
+- `SIM_FAST_EMA` (default 21) & `SIM_SLOW_EMA` (default 100): trend filters (fast above slow required for longs)
+- `SIM_ATR_PERIOD` (default 14): volatility metric period
+- `SIM_ATR_STOP_MULT` (default 2.5): ATR multiple (part of adaptive stop distance)
+- `SIM_RR` (default 2.0): reward:risk target multiple used to project take-profit hint
+- `SIM_MIN_ATR_PCT` (default 0.002): minimum ATR/price ratio filter to avoid ultra-low volatility symbols
+
+These new parameters power `multi_factor_trend_rsi.py`, which combines:
+1. Bullish RSI divergence OR oversold RSI reversal
+2. Trend confirmation (EMA fast > EMA slow)
+3. Volatility sanity check (ATR relative threshold)
+4. Adaptive stop (ATR-based) and target derived from reward:risk multiple.
 
 Command-line options can override many of these values at runtime (for example, `--days` or `--symbols-limit`).
 
@@ -51,6 +68,8 @@ Optional arguments:
 
 The script prints each significant event and a final equity summary.
 
+To experiment with the advanced strategy you can import and call `ctb.strategies.multi_factor_trend_rsi.run_strategy` similarly to the existing divergence strategy. (The current simulator loop still focuses on divergence fills; integrating multi-factor signal execution end-to-end would require extending the order generation logic to use ATR-based dynamic stops/targets.)
+
 ## Running Tests
 
 Basic utility tests are provided and can be executed with:
@@ -64,3 +83,4 @@ python -m unittest
 - Entry orders wait a maximum of three candles for a fill; this was chosen as a sensible default because the requirement only specified "within MAX_ENTRY_WAIT_SPAN" without a value.
 - If a candle hits both stop-loss and take-profit levels, the simulator prioritises the stop-loss to model a conservative fill order.
 - When sufficient historical data is unavailable for a symbol, it is skipped.
+- Advanced strategy signals currently act as an extension point; full execution (dynamic position sizing by volatility, trailing stops) can be added in a subsequent iteration.
