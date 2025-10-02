@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from api.binance_client import BinanceClient
-from config import Config
+from config import Config, BreakoutSettings
 from strategies.breakout_trend import BreakoutSignal, generate_breakout_signals
 """Dedicated simulator for the breakout / trend-following strategy.
 
@@ -32,37 +32,7 @@ if not logger.handlers:
         logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
 
-# --- Breakout specific configuration (env driven) -------------------------
-
-
-def _get_env_float(key: str, default: float) -> float:
-    v = os.getenv(key)
-    return float(v) if v not in (None, "") else default
-
-
-def _get_env_int(key: str, default: int) -> int:
-    v = os.getenv(key)
-    return int(v) if v not in (None, "") else default
-
-
-@dataclass(slots=True)
-class BreakoutConfig:
-    channel_lookback: int = _get_env_int("BR_CHANNEL_LOOKBACK", 20)
-    fast_ema_period: int = _get_env_int("BR_FAST_EMA", 21)
-    slow_ema_period: int = _get_env_int("BR_SLOW_EMA", 100)
-    atr_period: int = _get_env_int("BR_ATR_PERIOD", 14)
-    entry_atr_buffer: float = _get_env_float("BR_ENTRY_ATR_BUFFER", 0.10)
-    stop_atr_mult: float = _get_env_float("BR_STOP_ATR_MULT", 2.0)
-    reward_risk: float = _get_env_float("BR_REWARD_RISK", 3.0)
-    min_atr_pct: float = _get_env_float("BR_MIN_ATR_PCT", 0.002)
-    risk_per_trade_pct: float = _get_env_float("BR_RISK_PER_TRADE_PCT", 0.01)
-    trail_activate_rr: float = _get_env_float("BR_TRAIL_ACTIVATE_RR", 1.5)
-    trail_lock_rr: float = _get_env_float("BR_TRAIL_LOCK_RR", 0.75)
-    trail_atr_mult: float = _get_env_float("BR_TRAIL_ATR_MULT", 1.5)
-    max_hold_candles: int = _get_env_int("BR_MAX_HOLD_CANDLES", 400)
-    max_open_positions: int = _get_env_int("BR_MAX_OPEN_POSITIONS", 6)
-    min_trade_allocation: float = _get_env_float("BR_MIN_TRADE_ALLOCATION",
-                                                 10.0)
+BreakoutConfig = BreakoutSettings  # backward compatibility alias
 
 
 # --- Data structures ------------------------------------------------------
@@ -167,7 +137,7 @@ def download_klines(client: BinanceClient, symbols: Iterable[str],
 
 def prepare_symbol_data(klines_by_symbol: Dict[str, List[List[float]]],
                         start_ms: int,
-                        bcfg: BreakoutConfig) -> Dict[str, SymbolData]:
+                        bcfg: BreakoutSettings) -> Dict[str, SymbolData]:
     symbol_data: Dict[str, SymbolData] = {}
     for symbol, rows in klines_by_symbol.items():
         klines = [Kline.from_binance(r) for r in rows if int(r[0]) >= start_ms]
@@ -207,7 +177,7 @@ class BreakoutSimulator:
 
     def __init__(self, symbol_data: Dict[str,
                                          SymbolData], timeline: List[datetime],
-                 base_cfg: Config, bcfg: BreakoutConfig) -> None:
+                 base_cfg: Config, bcfg: BreakoutSettings) -> None:
         self.symbol_data = symbol_data
         self.timeline = timeline
         self.base_cfg = base_cfg
@@ -366,7 +336,9 @@ def run_breakout_simulation(
     api_key = base_cfg.binance_api_key if api_key is None else api_key
     api_secret = base_cfg.binance_api_secret if api_secret is None else api_secret
     sandbox = base_cfg.sandbox if sandbox is None else sandbox
-    bcfg = BreakoutConfig()
+    if not base_cfg.breakout:
+        raise RuntimeError("Breakout settings missing from configuration")
+    bcfg = base_cfg.breakout
     timeframe_hours = base_cfg.timeframe_hours
     now = datetime.now(timezone.utc)
     base_time = now - timedelta(

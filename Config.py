@@ -1,18 +1,7 @@
 from __future__ import annotations
 
-"""Compatibility wrapper for the Config class.
-
-Some tooling and examples expect `from config import Config` (lowercase module
-name). The canonical implementation currently resides in `Config.py` (capital C)
-so this file simply re-exports it. Keeping the logic single-sourced avoids
-divergence while supporting both import styles if needed.
-"""
-
-from Config import Config  # noqa: F401
-
 __all__ = ["Config"]
 from __future__ import annotations
-
 """Central application configuration loader.
 
 The original Config class was removed; this module reintroduces a light-weight
@@ -51,6 +40,7 @@ try:
     # python-dotenv is an optional dependency (listed in requirements.txt)
     from dotenv import load_dotenv  # type: ignore
 except Exception:  # pragma: no cover
+
     def load_dotenv(*_args, **_kwargs):  # type: ignore
         return False
 
@@ -113,6 +103,47 @@ def _get_env_bool(key: str, default: bool) -> bool:
 
 
 @dataclass(slots=True)
+class BreakoutSettings:
+    channel_lookback: int
+    fast_ema_period: int
+    slow_ema_period: int
+    atr_period: int
+    entry_atr_buffer: float
+    stop_atr_mult: float
+    reward_risk: float
+    min_atr_pct: float
+    risk_per_trade_pct: float
+    trail_activate_rr: float
+    trail_lock_rr: float
+    trail_atr_mult: float
+    max_hold_candles: int
+    max_open_positions: int
+    min_trade_allocation: float
+
+    @classmethod
+    def from_env(cls, prefix: str = "BR_") -> "BreakoutSettings":
+        gei = _get_env_int
+        gef = _get_env_float
+        return cls(
+            channel_lookback=gei(f"{prefix}CHANNEL_LOOKBACK", 20),
+            fast_ema_period=gei(f"{prefix}FAST_EMA", 21),
+            slow_ema_period=gei(f"{prefix}SLOW_EMA", 100),
+            atr_period=gei(f"{prefix}ATR_PERIOD", 14),
+            entry_atr_buffer=gef(f"{prefix}ENTRY_ATR_BUFFER", 0.10),
+            stop_atr_mult=gef(f"{prefix}STOP_ATR_MULT", 2.0),
+            reward_risk=gef(f"{prefix}REWARD_RISK", 3.0),
+            min_atr_pct=gef(f"{prefix}MIN_ATR_PCT", 0.002),
+            risk_per_trade_pct=gef(f"{prefix}RISK_PER_TRADE_PCT", 0.01),
+            trail_activate_rr=gef(f"{prefix}TRAIL_ACTIVATE_RR", 1.5),
+            trail_lock_rr=gef(f"{prefix}TRAIL_LOCK_RR", 0.75),
+            trail_atr_mult=gef(f"{prefix}TRAIL_ATR_MULT", 1.5),
+            max_hold_candles=gei(f"{prefix}MAX_HOLD_CANDLES", 400),
+            max_open_positions=gei(f"{prefix}MAX_OPEN_POSITIONS", 6),
+            min_trade_allocation=gef(f"{prefix}MIN_TRADE_ALLOCATION", 10.0),
+        )
+
+
+@dataclass(slots=True)
 class Config:
     timeframe: str
     initial_capital: float
@@ -129,6 +160,7 @@ class Config:
     email_from: Optional[str] = None
     email_to: Optional[List[str]] = None
     starttls: bool = True
+    breakout: BreakoutSettings | None = None
 
     # --- Derived helpers ---
     @property
@@ -161,13 +193,18 @@ class Config:
 
         smtp_host = _get_env("SMTP_HOST")
         smtp_port_raw = _get_env("SMTP_PORT")
-        smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else None
+        smtp_port = int(
+            smtp_port_raw
+        ) if smtp_port_raw and smtp_port_raw.isdigit() else None
         smtp_user = _get_env("SMTP_USER")
         smtp_pass = _get_env("SMTP_PASS")
         email_from = _get_env("EMAIL_FROM")
         email_to_raw = _get_env("EMAIL_TO")
-        email_to = [e.strip() for e in email_to_raw.split(",") if e.strip()] if email_to_raw else None
+        email_to = [e.strip() for e in email_to_raw.split(",")
+                    if e.strip()] if email_to_raw else None
         starttls = _get_env_bool("STARTTLS", True)
+
+        breakout = BreakoutSettings.from_env()
 
         return cls(
             timeframe=timeframe,
@@ -184,6 +221,8 @@ class Config:
             email_from=email_from,
             email_to=email_to,
             starttls=starttls,
+            breakout=breakout,
         )
 
-__all__ = ["Config"]
+
+__all__ = ["Config", "BreakoutSettings"]
