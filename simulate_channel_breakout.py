@@ -2,24 +2,9 @@ from __future__ import annotations
 
 from api.binance_client import BinanceClient
 from config import Config, BreakoutSettings
-from strategies.breakout_trend import BreakoutSignal, generate_breakout_signals
-"""Dedicated simulator for the breakout / trend-following strategy.
-
-Usage (after setting up environment like the main simulator):
-  python3 simulate_breakout.py --days 365 --symbols-limit 40
-
-This simulator reuses general connectivity / timeframe config from the
-existing `Config` class but has its own environment-tunable parameters
-prefixed with BR_. We keep it separate from the original `simulate.py`
-to allow rapid iteration without destabilising other strategies.
-
-DISCLAIMER: This is a research backtest harness. Historical results
-do NOT guarantee future returns. Use at your own risk.
-"""
-
+from signals.channel_breakout import BreakoutSignal, generate_breakout_signals
 import argparse
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
@@ -33,7 +18,6 @@ if not logger.handlers:
     logger.addHandler(handler)
 
 BreakoutConfig = BreakoutSettings  # backward compatibility alias
-
 
 # --- Data structures ------------------------------------------------------
 

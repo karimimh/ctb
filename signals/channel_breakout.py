@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-"""Breakout / Trend-Following Strategy Helpers.
-
+from technical_analysis.indicators import atr, ema
+"""
 This module provides pure functions to support a volatility-adjusted
 channel breakout strategy that can be re-used by different simulators
 or (later) live trading components.
@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from typing import List, Sequence
 import math
 
-from ctb.technical_analysis.indicators import ema, atr
 
 @dataclass(slots=True)
 class BreakoutSignal:
@@ -121,8 +120,7 @@ def generate_breakout_signals(
                     regime_fast=f,
                     regime_slow=s,
                     atr=a,
-                )
-            )
+                ))
         prev_above = above
     return signals
 
