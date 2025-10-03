@@ -1,7 +1,3 @@
-"""Dataclass models used by the breakout simulation.
-
-Separated from simulate.py for clarity and reusability.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass

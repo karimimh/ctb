@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from api.binance_client import BinanceClient
-from channel_breakout_strategy.signal import BreakoutSignal, generate_breakout_signals
-from channel_breakout_strategy.config import Config, BreakoutSettings
-from utils.util import (
-    fetch_symbol_universe,
-    download_klines,
-    _datetime_to_ms,
-    _align_to_interval,
-    _build_timeline,
-)
-import argparse
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
+from api.binance_client import BinanceClient
+from channel_breakout_strategy.config import Config
+from channel_breakout_strategy.signal import generate_breakout_signals
 from technical_analysis.kline import Kline
+from utils.util import (align_to_interval, build_timeline, datetime_to_ms,
+                        download_klines, fetch_symbol_universe,
+                        load_klines_from_csv, derive_timeline_from_klines)
+
+from .models import Position, SimulationResult, SymbolData
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -26,16 +23,12 @@ if not logger.handlers:
     logger.addHandler(handler)
 
 
-from .models import SymbolData, Position, SimulationResult
-
-
 def prepare_symbol_data(klines_by_symbol: Dict[str, List[List[float]]],
-                        start_ms: int,
-                        bcfg: BreakoutSettings) -> Dict[str, SymbolData]:
+                        start_ms: int, cfg: Config) -> Dict[str, SymbolData]:
     symbol_data: Dict[str, SymbolData] = {}
     for symbol, rows in klines_by_symbol.items():
         klines = [Kline.from_binance(r) for r in rows if int(r[0]) >= start_ms]
-        if len(klines) < max(bcfg.slow_ema_period, bcfg.channel_lookback) + 10:
+        if len(klines) < max(cfg.slow_ema_period, cfg.channel_lookback) + 10:
             continue
         closes = [k.close for k in klines]
         highs = [k.high for k in klines]
@@ -47,14 +40,14 @@ def prepare_symbol_data(klines_by_symbol: Dict[str, List[List[float]]],
             closes,
             highs,
             lows,
-            fast_ema_period=bcfg.fast_ema_period,
-            slow_ema_period=bcfg.slow_ema_period,
-            atr_period=bcfg.atr_period,
-            channel_lookback=bcfg.channel_lookback,
-            entry_atr_buffer=bcfg.entry_atr_buffer,
-            stop_atr_mult=bcfg.stop_atr_mult,
-            reward_risk=bcfg.reward_risk,
-            min_atr_pct=bcfg.min_atr_pct,
+            fast_ema_period=cfg.fast_ema_period,
+            slow_ema_period=cfg.slow_ema_period,
+            atr_period=cfg.atr_period,
+            channel_lookback=cfg.channel_lookback,
+            entry_atr_buffer=cfg.entry_atr_buffer,
+            stop_atr_mult=cfg.stop_atr_mult,
+            reward_risk=cfg.reward_risk,
+            min_atr_pct=cfg.min_atr_pct,
         )
         time_to_index = {k.open_time_ms: i for i, k in enumerate(klines)}
         symbol_data[symbol] = SymbolData(symbol=symbol,
@@ -64,18 +57,14 @@ def prepare_symbol_data(klines_by_symbol: Dict[str, List[List[float]]],
     return symbol_data
 
 
-# --- Simulator ------------------------------------------------------------
-
 class BreakoutSimulator:
 
-    def __init__(self, symbol_data: Dict[str,
-                                         SymbolData], timeline: List[datetime],
-                 base_cfg: Config, bcfg: BreakoutSettings) -> None:
+    def __init__(self, symbol_data: Dict[str, SymbolData],
+                 timeline: List[datetime], cfg: Config) -> None:
         self.symbol_data = symbol_data
         self.timeline = timeline
-        self.base_cfg = base_cfg
-        self.bcfg = bcfg
-        self.cash = base_cfg.initial_capital
+        self.cfg = cfg
+        self.cash = cfg.initial_capital
         self.positions: Dict[str, Position] = {}
         self.realized_pnl = 0.0
 
@@ -106,13 +95,13 @@ class BreakoutSimulator:
         if risk_per_unit <= 0:
             return
         equity = self.portfolio_value()
-        risk_capital = equity * self.bcfg.risk_per_trade_pct
+        risk_capital = equity * self.cfg.risk_per_trade_pct
         qty = risk_capital / risk_per_unit
         cost = qty * entry
         if cost > self.cash:
             qty = self.cash / entry
             cost = qty * entry
-        if cost < self.bcfg.min_trade_allocation:
+        if cost < self.cfg.min_trade_allocation:
             return
         tp = sig.reward_risk_target
         self.cash -= cost
@@ -148,20 +137,20 @@ class BreakoutSimulator:
         else:
             # Trailing activation
             rr_unrealized = (kline.close - pos.entry_price) / pos.initial_risk
-            if rr_unrealized >= self.bcfg.trail_activate_rr:
+            if rr_unrealized >= self.cfg.trail_activate_rr:
                 pos.active_trailing = True
             if pos.active_trailing:
                 # Trail to either locked RR or ATR-based dynamic barrier
                 # Compute ATR locally (avoid recomputing arrays) – approximate with rolling high/low range
                 # For accuracy you could pre-store ATR; here acceptable to reuse initial risk * ratio
                 # We re-calc adaptive trailing stop: max(current stop, entry + lock_rr * risk, close - atr_mult * risk)
-                lock_price = pos.entry_price + self.bcfg.trail_lock_rr * pos.initial_risk
-                dynamic_price = kline.close - self.bcfg.trail_atr_mult * pos.initial_risk
+                lock_price = pos.entry_price + self.cfg.trail_lock_rr * pos.initial_risk
+                dynamic_price = kline.close - self.cfg.trail_atr_mult * pos.initial_risk
                 new_stop = max(pos.stop_loss, lock_price, dynamic_price)
                 if new_stop > pos.stop_loss:
                     pos.stop_loss = new_stop
             held = idx - pos.entry_index
-            if held >= self.bcfg.max_hold_candles:
+            if held >= self.cfg.max_hold_candles:
                 exit_price = kline.close
                 exit_reason = "max-hold"
         if exit_price is not None:
@@ -178,7 +167,7 @@ class BreakoutSimulator:
         if not self.timeline:
             raise ValueError("Timeline empty")
         for now in self.timeline:
-            ms = _datetime_to_ms(now)
+            ms = datetime_to_ms(now)
             # Which symbols have a candle at this time
             idx_by_symbol = {
                 sym: data.time_to_index.get(ms)
@@ -192,10 +181,10 @@ class BreakoutSimulator:
                 continue
             # Entries first
             # Respect max open positions (no partial skipping across ordering for now)
-            free_slots = self.bcfg.max_open_positions - len(self.positions)
+            free_slots = self.cfg.max_open_positions - len(self.positions)
             if free_slots > 0:
                 for sym, i in idx_by_symbol.items():
-                    if len(self.positions) >= self.bcfg.max_open_positions:
+                    if len(self.positions) >= self.cfg.max_open_positions:
                         break
                     self._maybe_enter(sym, i, now)
             # Management
@@ -213,80 +202,66 @@ class BreakoutSimulator:
         )
 
 
-# --- Entrypoint -----------------------------------------------------------
-
-
-def run_breakout_simulation(
-    days: Optional[int] = None,
-    symbols_limit: Optional[int] = None,
-    api_key: Optional[str] = None,
-    api_secret: Optional[str] = None,
-    sandbox: Optional[bool] = None,
-) -> SimulationResult:
-    base_cfg = Config.load()
-    days = base_cfg.default_days if days is None else days
-    symbols_limit = base_cfg.default_symbols_limit if symbols_limit is None else symbols_limit
-    api_key = base_cfg.binance_api_key if api_key is None else api_key
-    api_secret = base_cfg.binance_api_secret if api_secret is None else api_secret
-    sandbox = base_cfg.sandbox if sandbox is None else sandbox
-    if not base_cfg.breakout:
+def run_breakout_simulation() -> SimulationResult:
+    cfg = Config.load()
+    days = cfg.default_days
+    symbols_limit = cfg.default_symbols_limit
+    api_key = cfg.binance_api_key
+    api_secret = cfg.binance_api_secret
+    sandbox = cfg.sandbox
+    if not cfg.breakout:
         raise RuntimeError("Breakout settings missing from configuration")
-    bcfg = base_cfg.breakout
-    timeframe_hours = base_cfg.timeframe_hours
-    now = datetime.now(timezone.utc)
-    base_time = now - timedelta(
-        minutes=now.minute, seconds=now.second, microseconds=now.microsecond)
-    end_time = _align_to_interval(base_time, timeframe_hours)
-    start_time = end_time - timedelta(days=days)
-    timeline = _build_timeline(start_time, end_time, timeframe_hours)
-    client = BinanceClient(api_key=api_key,
-                           api_secret=api_secret,
-                           sandbox=sandbox)
-    symbols = fetch_symbol_universe(client, symbols_limit)
-    start_ms = _datetime_to_ms(start_time)
-    end_ms = _datetime_to_ms(end_time)
-    klines_by_symbol = download_klines(client, symbols, base_cfg.timeframe,
-                                       start_ms, end_ms)
+    timeframe_hours = cfg.timeframe_hours
+    if cfg.load_klines_from_csv:
+        # Load symbol list implicitly from directory (later could restrict)
+        klines_by_symbol = load_klines_from_csv(cfg.kline_csv_dir,
+                                                cfg.timeframe)
+        if not klines_by_symbol:
+            raise RuntimeError(
+                f"No kline CSV files found in {cfg.kline_csv_dir} for interval {cfg.timeframe}"
+            )
+        # Build timeline from data range
+        timeline = derive_timeline_from_klines(klines_by_symbol,
+                                               timeframe_hours)
+        if not timeline:
+            raise RuntimeError(
+                "Unable to derive timeline from loaded kline CSV files")
+        # start_ms based on earliest candle
+        start_ms = min(int(rows[0][0]) for rows in klines_by_symbol.values())
+    else:
+        now = datetime.now(timezone.utc)
+        base_time = now - timedelta(
+            minutes=now.minute,
+            seconds=now.second,
+            microseconds=now.microsecond)
+        end_time = align_to_interval(base_time, timeframe_hours)
+        start_time = end_time - timedelta(days=days)
+        timeline = build_timeline(start_time, end_time, timeframe_hours)
+        client = BinanceClient(api_key=api_key,
+                               api_secret=api_secret,
+                               sandbox=sandbox)
+        symbols = fetch_symbol_universe(client, symbols_limit)
+        start_ms = datetime_to_ms(start_time)
+        end_ms = datetime_to_ms(end_time)
+        klines_by_symbol = download_klines(client,
+                                           symbols,
+                                           cfg.timeframe,
+                                           start_ms,
+                                           end_ms,
+                                           save_dir=cfg.kline_csv_dir,
+                                           save=cfg.save_downloaded_klines)
     if not klines_by_symbol:
         raise RuntimeError("No klines downloaded; aborting")
-    symbol_data = prepare_symbol_data(klines_by_symbol, start_ms, bcfg)
+    symbol_data = prepare_symbol_data(klines_by_symbol, start_ms, cfg)
     if not symbol_data:
         raise RuntimeError("No symbol data after preparation")
-    sim = BreakoutSimulator(symbol_data, timeline, base_cfg, bcfg)
+    sim = BreakoutSimulator(symbol_data, timeline, cfg)
     return sim.run()
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Breakout strategy simulator")
-    p.add_argument("--days",
-                   type=int,
-                   default=None,
-                   help="Backtest period in days")
-    p.add_argument("--symbols-limit",
-                   type=int,
-                   default=None,
-                   help="Limit number of USDC symbols")
-    p.add_argument("--api-key", type=str, default=None, help="Binance API key")
-    p.add_argument("--api-secret",
-                   type=str,
-                   default=None,
-                   help="Binance API secret")
-    p.add_argument("--sandbox",
-                   action="store_true",
-                   help="Use Binance sandbox")
-    return p.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
     try:
-        result = run_breakout_simulation(
-            days=args.days,
-            symbols_limit=args.symbols_limit,
-            api_key=args.api_key,
-            api_secret=args.api_secret,
-            sandbox=True if args.sandbox else None,
-        )
+        result = run_breakout_simulation()
         logger.info(
             "Breakout Final equity: %.2f | Realized PnL: %.2f | Cash: %.2f",
             result.final_equity,

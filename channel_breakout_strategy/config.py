@@ -1,69 +1,53 @@
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
 
-__all__ = ["BreakoutSettings", "Config"]
-
-
-@dataclass
-class BreakoutSettings:
-    channel_lookback: int
-    fast_ema_period: int
-    slow_ema_period: int
-    atr_period: int
-    entry_atr_buffer: float
-    stop_atr_mult: float
-    reward_risk: float
-    min_atr_pct: float
-    risk_per_trade_pct: float
-    trail_activate_rr: float
-    trail_lock_rr: float
-    trail_atr_mult: float
-    max_hold_candles: int
-    max_open_positions: int
-    min_trade_allocation: float
+__all__ = ["Config"]
 
 
-@dataclass
+@dataclass(slots=True)
 class Config:
-    # Core simulation parameters (populate minimally; extend as needed)
-    initial_capital: float
-    timeframe: str
-    timeframe_hours: int
-    default_days: int
-    default_symbols_limit: int
-    sandbox: bool
-    binance_api_key: Optional[str]
-    binance_api_secret: Optional[str]
-    breakout: Optional[BreakoutSettings]
+    # --- Exchange / data settings ---
+    timeframe_hours: int = 4  # Candle interval size in hours
+    timeframe: str = "4h"  # Binance kline interval string
+    default_days: int = 365  # Default backtest lookback
+    default_symbols_limit: int = 80  # Limit universe selection
+    sandbox: bool = False  # Use Binance testnet (if supported)
+    binance_api_key: str | None = None
+    binance_api_secret: str | None = None
+
+    # --- Strategy core parameters ---
+    fast_ema_period: int = 21
+    slow_ema_period: int = 100
+    atr_period: int = 14
+    channel_lookback: int = 20
+    entry_atr_buffer: float = 0.10
+    stop_atr_mult: float = 2.0
+    reward_risk: float = 3.0
+    min_atr_pct: float = 0.002
+
+    # --- Position sizing / risk ---
+    initial_capital: float = 1_000.0
+    risk_per_trade_pct: float = 0.01
+    min_trade_allocation: float = 10.0
+    max_open_positions: int = 4
+
+    # --- Trade management / trailing ---
+    trail_activate_rr: float = 1.5
+    trail_lock_rr: float = 0.75
+    trail_atr_mult: float = 1.5
+    max_hold_candles: int = 400
+
+    # --- Feature flags ---
+    breakout: bool = True
+
+    # --- Kline CSV cache options ---
+    # Directory where kline CSV files are stored / read from
+    kline_csv_dir: str = "data/klines"
+    # If True, after downloading klines from the exchange they will be written to CSV files
+    save_downloaded_klines: bool = True
+    # If True, skip downloading and instead load klines from CSV files found in kline_csv_dir
+    load_klines_from_csv: bool = True
 
     @classmethod
-    def load(cls) -> "Config":  # Placeholder loader; replace with real config source
-        # In a real application, load from a file (YAML/JSON/env). Here we provide sane defaults.
-        default_breakout = BreakoutSettings(
-            channel_lookback=120,
-            fast_ema_period=9,
-            slow_ema_period=26,
-            atr_period=14,
-            entry_atr_buffer=0.1,
-            stop_atr_mult=2.0,
-            reward_risk=3.0,
-            min_atr_pct=0.002,
-            risk_per_trade_pct=0.01,
-            trail_activate_rr=2.0,
-            trail_lock_rr=1.0,
-            trail_atr_mult=1.5,
-            max_hold_candles=500,
-            max_open_positions=10,
-            min_trade_allocation=25.0,
-        )
-        return cls(
-            initial_capital=10_000.0,
-            timeframe="1h",
-            timeframe_hours=1,
-            default_days=120,
-            default_symbols_limit=50,
-            sandbox=True,
-            binance_api_key=None,
-            binance_api_secret=None,
-            breakout=default_breakout,
-        )
+    def load(cls) -> "Config":  # Simple loader (no env / files for now)
+        return cls()
