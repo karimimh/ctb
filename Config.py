@@ -1,38 +1,39 @@
 from __future__ import annotations
 
-__all__ = ["Config"]
-from __future__ import annotations
-"""Central application configuration loader.
+"""Application configuration loader.
 
-The original Config class was removed; this module reintroduces a light-weight
-environment driven configuration object used by the simulators and (optionally)
-notification components.
+This module centralises environment driven configuration so that strategy
+simulators and (future) live components share a single definition of runtime
+settings. All environment variables are optional; sane defaults are provided.
 
-Environment variables (all optional with sensible defaults):
+Groups (prefix comments in ``.env.example`` mirror this):
+    Core:
+        TIMEFRAME               Candle interval (Binance syntax) default '4h'
+        INITIAL_CAPITAL         Starting equity (float) default 10_000
+        DEFAULT_DAYS            Default lookback window (int, default 365)
+        DEFAULT_SYMBOLS_LIMIT   Max symbols to request (int, default 40)
+        SANDBOX                 Use sandbox endpoints if available (bool, default false)
 
-Core:
-  TIMEFRAME                Candle interval (Binance syntax) default '4h'
-  INITIAL_CAPITAL          Starting equity (float) default 10_000
-  DEFAULT_DAYS             Lookback window in days if --days not supplied (int, default 365)
-  DEFAULT_SYMBOLS_LIMIT    Symbol universe limit default 40
-  SANDBOX                  If 'true'/'1' enable sandbox mode (bool, default false)
+    Exchange credentials (optional – leave blank for public data mode):
+        BINANCE_API_KEY
+        BINANCE_API_SECRET
 
-Binance API (leave blank for public data only):
-  BINANCE_API_KEY
-  BINANCE_API_SECRET
+    Email notifications (optional; not required for simulations):
+        SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO, STARTTLS
 
-Email (not used in breakout simulator directly but retained for completeness):
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO, STARTTLS
+    Breakout strategy tuning (``BR_`` prefix): see ``.env.example`` for a full list.
 
-Breakout strategy specific BR_* variables are consumed in `simulate.py` by
-`BreakoutConfig` and are therefore not duplicated here.
+Usage example::
 
-Usage:
-  from config import Config
-  cfg = Config.load()
+        from config import Config
+        cfg = Config.load()  # automatically loads .env if present
+        print(cfg.initial_capital)
+
+Utility helpers ``Config.as_dict()`` and ``Config.describe()`` are provided to
+aid debugging / logging without manually enumerating fields.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import os
 from typing import List, Optional
 
@@ -142,6 +143,9 @@ class BreakoutSettings:
             min_trade_allocation=gef(f"{prefix}MIN_TRADE_ALLOCATION", 10.0),
         )
 
+    def as_dict(self) -> dict:  # lightweight introspection
+        return asdict(self)
+
 
 @dataclass(slots=True)
 class Config:
@@ -167,9 +171,31 @@ class Config:
     def timeframe_hours(self) -> int:
         hours = _TIMEFRAME_TO_HOURS.get(self.timeframe)
         if hours is None:
-            raise ValueError(f"Unsupported timeframe '{self.timeframe}'")
+            supported = ", ".join(sorted(_TIMEFRAME_TO_HOURS.keys()))
+            raise ValueError(
+                f"Unsupported timeframe '{self.timeframe}'. Supported: {supported}"
+            )
         # For sub-hour intervals we still return at least 1 hour for alignment logic
         return int(hours) if hours >= 1 else 1
+
+    # Convenience / logging helpers -------------------------------------------------
+    def as_dict(self, redact_secrets: bool = True) -> dict:
+        d = asdict(self)
+        if redact_secrets:
+            if d.get("binance_api_key"):
+                d["binance_api_key"] = "***redacted***"
+            if d.get("binance_api_secret"):
+                d["binance_api_secret"] = "***redacted***"
+            if d.get("smtp_pass"):
+                d["smtp_pass"] = "***redacted***"
+        # Break breakout nested dataclass into dict
+        if isinstance(self.breakout, BreakoutSettings):
+            d["breakout"] = self.breakout.as_dict()
+        return d
+
+    def describe(self) -> str:
+        kv = self.as_dict()
+        return ", ".join(f"{k}={v}" for k, v in kv.items())
 
     @classmethod
     def load(cls, env_file: str | None = None) -> "Config":
@@ -193,15 +219,12 @@ class Config:
 
         smtp_host = _get_env("SMTP_HOST")
         smtp_port_raw = _get_env("SMTP_PORT")
-        smtp_port = int(
-            smtp_port_raw
-        ) if smtp_port_raw and smtp_port_raw.isdigit() else None
+        smtp_port = int(smtp_port_raw) if smtp_port_raw and smtp_port_raw.isdigit() else None
         smtp_user = _get_env("SMTP_USER")
         smtp_pass = _get_env("SMTP_PASS")
         email_from = _get_env("EMAIL_FROM")
         email_to_raw = _get_env("EMAIL_TO")
-        email_to = [e.strip() for e in email_to_raw.split(",")
-                    if e.strip()] if email_to_raw else None
+        email_to = [e.strip() for e in email_to_raw.split(",") if e.strip()] if email_to_raw else None
         starttls = _get_env_bool("STARTTLS", True)
 
         breakout = BreakoutSettings.from_env()
@@ -223,6 +246,5 @@ class Config:
             starttls=starttls,
             breakout=breakout,
         )
-
 
 __all__ = ["Config", "BreakoutSettings"]
