@@ -165,3 +165,7 @@ CTB is at the research and backtesting stage. Live order execution is **not** im
 - Unit tests for indicators, signals and the simulator, and CI
 - Paper trading against the Binance Spot Testnet using the existing signed client
 - Email alerts on entries and exits
+
+## License
+
+Released under the [MIT License](LICENSE).
