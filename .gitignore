@@ -1,4 +1,37 @@
-__pycache__/
+# Environment / secrets (keep the template)
 .env
+.env.*
+!.env.example
+
+# Python bytecode and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test, lint and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs, exports and local data dumps
 *.log
+logs/
 data/
+exports/
+*.csv
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
